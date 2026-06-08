@@ -79,6 +79,7 @@ public func failIfThrowsDatabaseError<T>(
     failIfThrows(block: block, file: file, function: function, line: line)
 }
 
+
 @discardableResult
 public func failIfThrows<T>(
     block: () throws -> T,
@@ -92,6 +93,18 @@ public func failIfThrows<T>(
         if let error = error as? DatabaseError, error.resultCode == .SQLITE_CORRUPT {
             DatabaseCorruptionState.flagDatabaseAsCorrupted(userDefaults: CurrentAppContext().appUserDefaults())
             owsFail("Failing due to database corruption. Extended result code: \(error.extendedResultCode)", file: file, function: function, line: line)
+        } else if let error = error as? DatabaseError, error.resultCode == .SQLITE_FULL {
+            // Gracefully close the database pool to rollback active transactions prior to crashing.
+            // Under out-of-disk-space (SQLITE_FULL) conditions, SQLite cannot write journal headers correctly,
+            // making abrupt process terminations prone to database corruption on the next launch.
+            if SSKEnvironment.hasShared {
+                let dbLogger = PrefixedLogger.empty()
+                dbLogger.error("Closing database pool prior to failing to prevent database corruption.")
+                dbLogger.flush()
+                try? SSKEnvironment.shared.databaseStorageRef.grdbStorage.pool.close()
+            }
+            
+            owsFail("Failing due to out of disk space (SQLITE_FULL) during database write", file: file, function: function, line: line)
         } else {
             owsFail("Failing for unexpected throw: \(error.grdbErrorForLogging)", file: file, function: function, line: line)
         }
